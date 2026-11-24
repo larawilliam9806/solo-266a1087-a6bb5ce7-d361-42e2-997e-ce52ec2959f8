@@ -76,6 +76,19 @@ CREATE TABLE IF NOT EXISTS review_observations (
     PRIMARY KEY (review_id, hour_utc)
 );
 
+-- One row per corrected observation batch: makes 纠时 idempotent (a retry
+-- with the same offset replays the receipt) and forbids a second correction
+-- of the same batch with a different offset.
+CREATE TABLE IF NOT EXISTS time_shifts (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id      INTEGER NOT NULL REFERENCES batches(id),
+    station       TEXT    NOT NULL,
+    offset_hours  INTEGER NOT NULL,
+    rows_moved    INTEGER NOT NULL,
+    created_utc   TEXT    NOT NULL,
+    UNIQUE (batch_id)
+);
+
 CREATE TABLE IF NOT EXISTS review_results (
     review_id             INTEGER NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
     hour_utc              TEXT    NOT NULL,

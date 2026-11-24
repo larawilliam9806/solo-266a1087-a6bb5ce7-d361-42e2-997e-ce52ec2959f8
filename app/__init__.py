@@ -20,7 +20,7 @@ from flask import (
     url_for,
 )
 
-from . import db, ingest, review as review_mod, times
+from . import db, ingest, review as review_mod, shift as shift_mod, times
 
 TRACE_LIMIT = 40
 
@@ -296,6 +296,13 @@ def create_app(test_config: dict | None = None) -> Flask:
             station = stations[0]["code"]
         forecasts = []
         observations = []
+        obs_batches = []
+        shift_history = []
+        selected_batch = None
+        try:
+            selected_batch = int((request.args.get("batch_id") or "").strip(), 10)
+        except ValueError:
+            selected_batch = None
         if station:
             limit_hour = (request.args.get("limit") or "200").strip()
             try:
@@ -312,13 +319,63 @@ def create_app(test_config: dict | None = None) -> Flask:
                 "ORDER BY hour_utc DESC LIMIT ?",
                 (station, limit),
             ).fetchall()
+            obs_batches = conn.execute(
+                "SELECT b.id, b.created_utc, b.filename, b.rows_ok, "
+                "(SELECT COUNT(*) FROM observation o WHERE o.batch_id = b.id) AS rows_now, "
+                "s.offset_hours AS shifted_by "
+                "FROM batches b LEFT JOIN time_shifts s ON s.batch_id = b.id "
+                "WHERE b.station = ? AND b.kind = 'observation' "
+                "ORDER BY b.id DESC LIMIT 200",
+                (station,),
+            ).fetchall()
+            shift_history = conn.execute(
+                "SELECT * FROM time_shifts WHERE station = ? ORDER BY id DESC LIMIT 50",
+                (station,),
+            ).fetchall()
         return render_template(
             "data.html",
             stations=stations,
             station=station,
             forecasts=forecasts,
             observations=observations,
+            obs_batches=obs_batches,
+            shift_history=shift_history,
+            selected_batch=selected_batch,
+            max_shift_hours=shift_mod.MAX_SHIFT_HOURS,
         )
+
+    @app.post("/shifts")
+    def create_shift():
+        conn = get_conn()
+        station = (request.form.get("station") or "").strip()
+        batch_raw = (request.form.get("batch_id") or "").strip()
+        try:
+            if not station:
+                raise shift_mod.ShiftError("请选择站号")
+            if not batch_raw:
+                raise shift_mod.ShiftError("请选择实测批次")
+            try:
+                batch_id = int(batch_raw, 10)
+            except ValueError:
+                raise shift_mod.ShiftError(f"批次号不合法：{batch_raw!r}") from None
+            offset = shift_mod.parse_offset(request.form.get("offset_hours"))
+            receipt = shift_mod.correct_batch(
+                conn, station=station, batch_id=batch_id, offset_hours=offset
+            )
+        except shift_mod.ShiftError as exc:
+            flash(str(exc), "error")
+            for hour in exc.conflicts[:20]:
+                flash(f"冲突整点 {times.display(hour)}", "error-detail")
+            if len(exc.conflicts) > 20:
+                flash(f"……其余 {len(exc.conflicts) - 20} 个冲突整点从略", "error-detail")
+            return redirect(url_for("data_browser", station=station, batch_id=batch_raw))
+        note = "（该批次此前已按此偏移纠时，重复提交按原回执返回）" if receipt.replayed else ""
+        flash(
+            f"纠时回执：批次 #{receipt.batch_id}，偏移 {receipt.offset_hours:+d} 小时，"
+            f"移动 {receipt.rows_moved} 行。{note}",
+            "success",
+        )
+        return redirect(url_for("data_browser", station=station))
 
     @app.get("/healthz")
     def healthz():

@@ -16,6 +16,61 @@
   {% if not stations %}
     <p class="empty">还没有资料，先去<a class="link" href="{{ url_for('index') }}">上传</a>。</p>
   {% else %}
+    <section class="card inset">
+      <h2>实测批次纠时</h2>
+      <p class="hint">
+        潮位仪走偏会把整批实测记到错的整点。选择实测批次，填入要加到原 UTC 时刻上的<b>非零整小时数</b>
+        （如 +3 或 -2），整批平移到新整点，潮位与批次号保留。落点与本批原整点重叠是允许的；
+        落点已被其他批次或未归批实测占用、或补档已覆盖本批任一行时，整批拒绝。每批只能纠时一次。
+      </p>
+      {% if obs_batches %}
+        <form method="post" action="{{ url_for('create_shift') }}" class="form">
+          <input type="hidden" name="station" value="{{ station }}">
+          <div class="field-row">
+            <div class="field">
+              <label for="batch_id">实测批次</label>
+              <select id="batch_id" name="batch_id" required>
+                {% for b in obs_batches %}
+                  <option value="{{ b.id }}" {{ 'selected' if b.id == selected_batch }}>
+                    #{{ b.id }} · {{ b.created_utc|dt }} · {{ b.rows_ok }} 行
+                    {%- if b.filename %} · {{ b.filename }}{% endif %}
+                    {%- if b.rows_now != b.rows_ok %}（现存 {{ b.rows_now }} 行，已被补档覆盖）{% endif %}
+                    {%- if b.shifted_by is not none %}（已纠时 {{ '%+d' % b.shifted_by }} 小时）{% endif %}
+                  </option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="field">
+              <label for="offset_hours">偏移小时（非零整数）</label>
+              <input id="offset_hours" name="offset_hours" type="number" step="1"
+                     min="-{{ max_shift_hours }}" max="{{ max_shift_hours }}"
+                     placeholder="例如 +3 或 -2" required>
+            </div>
+          </div>
+          <button type="submit" class="btn primary">核对并纠时</button>
+        </form>
+      {% else %}
+        <p class="empty">该站还没有实测批次。</p>
+      {% endif %}
+      {% if shift_history %}
+        <h2 class="subhead">纠时记录</h2>
+        <div class="table-wrap">
+          <table class="table compact">
+            <thead><tr><th>批次</th><th class="num">偏移</th><th class="num">移动行数</th><th>纠时时刻</th></tr></thead>
+            <tbody>
+              {% for s in shift_history %}
+                <tr>
+                  <td class="mono">#{{ s.batch_id }}</td>
+                  <td class="num mono">{{ '%+d' % s.offset_hours }} 小时</td>
+                  <td class="num">{{ s.rows_moved }}</td>
+                  <td class="mono">{{ s.created_utc|dt }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+    </section>
     <div class="grid two">
       <div>
         <h2>预报报文 <span class="muted">（按目标整点倒序）</span></h2>
@@ -41,16 +96,17 @@
         <h2>实测 <span class="muted">（按整点倒序，订正后覆盖）</span></h2>
         <div class="table-wrap tall">
           <table class="table compact">
-            <thead><tr><th>整点</th><th class="num">潮位</th><th>更新时刻</th></tr></thead>
+            <thead><tr><th>整点</th><th class="num">潮位</th><th class="num">批次</th><th>更新时刻</th></tr></thead>
             <tbody>
               {% for o in observations %}
                 <tr>
                   <td class="mono">{{ o.hour_utc|dt }}</td>
                   <td class="num">{{ o.level_cm|cm }}</td>
+                  <td class="num mono">{{ '#%d' % o.batch_id if o.batch_id is not none else '—' }}</td>
                   <td class="mono muted">{{ o.updated_utc|dt }}</td>
                 </tr>
               {% else %}
-                <tr><td colspan="3" class="empty">暂无实测</td></tr>
+                <tr><td colspan="4" class="empty">暂无实测</td></tr>
               {% endfor %}
             </tbody>
           </table>
